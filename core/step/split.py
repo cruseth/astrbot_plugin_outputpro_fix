@@ -202,10 +202,6 @@ class TextTokenizer:
             m = self.pattern.match(text, i)
             if m:
                 seg = m.group()
-                if seg.strip() == "":
-                    buf += seg
-                    i += len(seg)
-                    continue
                 buf += seg
                 yield Token(
                     self._restore_kaomoji(buf, mapping),

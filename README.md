@@ -1,16 +1,16 @@
 
 <div align="center">
 
-![:name](https://count.getloli.com/@astrbot_plugin_outputpro?name=astrbot_plugin_outputpro&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
+![:name](https://count.getloli.com/@astrbot_plugin_outputpro_fix?name=astrbot_plugin_outputpro_fix&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
-# astrbot_plugin_outputpro
+# astrbot_plugin_outputpro_fix
 
 _✨ 输出增强 ✨_  
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-3.4%2B-orange.svg)](https://github.com/Soulter/AstrBot)
-[![GitHub](https://img.shields.io/badge/作者-Zhalslar-blue)](https://github.com/Zhalslar)
+[![GitHub](https://img.shields.io/badge/作者-Zhalslar%2C%20cruseth-blue)](https://github.com/cruseth/astrbot_plugin_outputpro_fix)
 
 </div>
 
@@ -306,7 +306,7 @@ OutputPro 作用于 AstrBot **发送前**的“最后一公里”，把一条消
 
 ## 📦 安装
 
-在astrbot的插件市场搜索astrbot_plugin_outputpro，点击安装即可
+这是 `astrbot_plugin_outputpro` 的修复版，可与原版使用不同插件标识安装。
 
 ## ⌨️ 使用说明
 

@@ -1,8 +1,4 @@
-from astrbot.core.message.components import (
-    Node,
-    Nodes,
-    Plain,
-)
+from astrbot.core.message.components import BaseMessageComponent, Node, Nodes
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -72,6 +68,24 @@ class ForwardStep(BaseStep):
         if buf:
             chunks.append("".join(buf))
         return chunks
+
+    def _is_plain_component(self, comp: BaseMessageComponent) -> bool:
+        return type(comp).__name__ == "Plain" and isinstance(
+            getattr(comp, "text", None), str
+        )
+
+    def _plain_text_parts(self, chain: list[BaseMessageComponent]) -> list[str]:
+        return [
+            comp.text
+            for comp in chain
+            if self._is_plain_component(comp) and comp.text
+        ]
+
+    def _plain_text(self, chain: list[BaseMessageComponent]) -> str:
+        return "".join(self._plain_text_parts(chain))
+
+    def _plain_text_len(self, chain: list[BaseMessageComponent]) -> int:
+        return sum(len(text) for text in self._plain_text_parts(chain))
 
     async def _send_tg_expandable_blocks(
         self, event: AstrMessageEvent, messages: list[str]
@@ -172,24 +186,20 @@ class ForwardStep(BaseStep):
         return sent > 0
 
     async def handle(self, ctx: OutContext) -> StepResult:
-        if (
-            ctx.chain
-            and isinstance(ctx.chain[-1], Plain)
-            and len(ctx.chain[-1].text) > self.cfg.threshold
-        ):
+        if ctx.chain and self._plain_text_len(ctx.chain) > self.cfg.threshold:
             platform_name = ctx.event.get_platform_name()
 
             if platform_name == "aiocqhttp":
                 nodes = Nodes([])
                 name = await self._ensure_node_name(ctx.event)
                 uin = str(ctx.event.get_self_id() or ctx.bid)
-                content = list(ctx.chain.copy())
+                content = list(ctx.chain)
                 nodes.nodes.append(Node(uin=uin, name=name, content=content))
                 ctx.chain[:] = [nodes]
                 return StepResult(msg="已将消息转换为转发节点")
 
             elif platform_name == "telegram":
-                text = ctx.chain[-1].text
+                text = self._plain_text(ctx.chain)
                 messages = self._tg_split_by_utf16(text, self._tg_single_message_limit)
                 success = await self._send_tg_expandable_blocks(ctx.event, messages)
                 if success:

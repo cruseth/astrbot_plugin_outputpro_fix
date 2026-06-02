@@ -38,7 +38,7 @@ class OutputPlugin(Star):
                 g.name_to_qq.popitem(last=False)
             g.name_to_qq[name] = sender_id
 
-    @filter.on_decorating_result(priority=15)
+    @filter.on_decorating_result(priority=10000)
     async def on_decorating_result(self, event: AstrMessageEvent):
         """发送消息前"""
         result = event.get_result()

@@ -98,7 +98,7 @@
                 "hint": "可在文件中维护金句。支持相对路径与绝对路径，请使用 / 作为路径分隔符。可填写多个路径，系统会与默认金句合并后随机抽取",
                 "type": "list",
                 "default": [
-                    "data/plugins/astrbot_plugin_outputpro/default_quotes.json"
+                    "data/plugins/astrbot_plugin_outputpro_fix/default_quotes.json"
                 ]
             }
         }
@@ -458,7 +458,7 @@
                 "description": "Pillowmd 样式目录",
                 "hint": "支持相对路径与绝对路径，请使用 / 作为路径分隔符",
                 "type": "string",
-                "default": "data/plugins/astrbot_plugin_outputpro/t2i_style"
+                "default": "data/plugins/astrbot_plugin_outputpro_fix/t2i_style"
             },
             "auto_page": {
                 "description": "自动分页",
