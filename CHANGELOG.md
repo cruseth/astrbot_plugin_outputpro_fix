@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## v2.2.3-fix.2
+
+错误修复：
+
+- 主动发送消息现在也会经过 OutputPro pipeline，修复定时推送、后台任务等直接调用 `context.send_message()` 时绕过合并转发等处理的问题。
+- 增加主动发送递归保护，避免 `split` 等步骤内部再次发送消息时重复进入 pipeline。
+
 ## v2.2.3
 
 新增特性：
