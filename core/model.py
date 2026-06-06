@@ -47,6 +47,8 @@ class OutContext:
     bid: str
     group: GroupState
     timestamp: int
+    split_segments: list[list[BaseMessageComponent]] | None = None
+    split_delays: list[float] | None = None
 
 
 

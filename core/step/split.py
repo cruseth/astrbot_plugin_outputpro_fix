@@ -4,7 +4,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from astrbot.api import logger
-from astrbot.api.event import MessageChain
 from astrbot.api.message_components import (
     At,
     BaseMessageComponent,
@@ -346,32 +345,25 @@ class SplitStep(BaseStep):
 
         logger.debug(f"[Splitter] 消息被分为 {len(segments)} 段")
 
-        # 逐段发送
-        for i, seg in enumerate(segments[:-1]):
-            if seg.is_empty:
-                continue
-            try:
-                await self.plugin_config.context.send_message(
-                    ctx.event.unified_msg_origin,
-                    MessageChain(seg.components),
-                )
-                delay = self._calc_delay(
-                    seg.text,
-                    self.cfg.per_char_delay,
-                    self.cfg.min_delay,
-                    self.cfg.max_delay,
-                )
-                if self.cfg.show_typing:
-                    await self.typing.sleep(ctx, delay)
-                else:
-                    await asyncio.sleep(delay)
-            except Exception as e:
-                logger.error(f"[Splitter] 第{i + 1}段发送失败: {e}")
+        non_empty_segments = [seg for seg in segments if not seg.is_empty]
+        if len(non_empty_segments) <= 1:
+            return StepResult()
 
-        # 最后一段回填
+        ctx.split_segments = [list(seg.components) for seg in non_empty_segments]
+        ctx.split_delays = [
+            self._calc_delay(
+                seg.text,
+                self.cfg.per_char_delay,
+                self.cfg.min_delay,
+                self.cfg.max_delay,
+            )
+            for seg in non_empty_segments[:-1]
+        ]
+
+        # 回填完整分段链，保证 AstrBot 日志和上下文构建能看到所有分段。
         ctx.chain.clear()
-        if not segments[-1].is_empty:
-            ctx.chain.extend(segments[-1].components)
+        for seg in non_empty_segments:
+            ctx.chain.extend(seg.components)
 
         return StepResult(msg="分段完成")
 

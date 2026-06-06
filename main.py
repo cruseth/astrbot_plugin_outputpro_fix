@@ -1,6 +1,7 @@
+import asyncio
 import contextvars
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 from astrbot.api import logger
@@ -180,6 +181,130 @@ class OutputPlugin(Star):
     def _plain_from_chain(self, chain: list[Any]) -> str:
         return "".join(comp.text for comp in chain if isinstance(comp, Plain))
 
+    def _flatten_split_segments(self, segments: list[list[Any]]) -> list[Any]:
+        return [comp for segment in segments for comp in segment]
+
+    def _matches_full_split_chain(self, message_chain, segments: list[list[Any]]) -> bool:
+        chain = getattr(message_chain, "chain", None)
+        if chain is None:
+            return False
+        expected = self._flatten_split_segments(segments)
+        return len(chain) == len(expected) and all(
+            actual is expect or actual == expect
+            for actual, expect in zip(chain, expected)
+        )
+
+    def _derive_split_message(self, message_chain, segment: list[Any]):
+        derive = getattr(message_chain, "derive", None)
+        if callable(derive):
+            return derive(segment)
+        return MessageChain(segment)
+
+    async def _sleep_split_delay(self, event, delay: float) -> None:
+        if delay <= 0:
+            return
+
+        platform_name = ""
+        try:
+            platform_name = str(event.get_platform_name() or "")
+        except Exception:
+            pass
+
+        if not self.cfg.split.show_typing or platform_name not in {
+            "telegram",
+            "weixin_oc",
+            "aiocqhttp",
+        }:
+            await asyncio.sleep(delay)
+            return
+
+        async def show_once():
+            try:
+                if platform_name in {"telegram", "weixin_oc"}:
+                    send_typing = getattr(event, "send_typing", None)
+                    if callable(send_typing):
+                        await send_typing()
+                    return
+
+                gid = ""
+                try:
+                    gid = event.get_group_id()
+                except Exception:
+                    pass
+                if platform_name == "aiocqhttp" and not gid:
+                    bot = getattr(event, "bot", None)
+                    api = getattr(bot, "api", None)
+                    uid = event.get_sender_id() if hasattr(event, "get_sender_id") else ""
+                    if api and uid:
+                        await api.call_action(
+                            "set_input_status", user_id=uid, event_type=1
+                        )
+            except Exception:
+                logger.debug("[Splitter] 发送 typing 失败", exc_info=True)
+
+        if delay <= 1.0:
+            await show_once()
+            await asyncio.sleep(delay)
+            return
+
+        interval = min(2.5, max(1.0, delay / 3))
+        remaining = delay
+        while remaining > 0:
+            await show_once()
+            sleep_time = min(interval, remaining)
+            await asyncio.sleep(sleep_time)
+            remaining -= sleep_time
+
+    async def _send_split_segments(
+        self,
+        event,
+        original_send,
+        message_chain,
+        segments: list[list[Any]],
+        delays: list[float] | None,
+        *args,
+        **kwargs,
+    ):
+        sent_result = None
+        delays = delays or []
+        for index, segment in enumerate(segments):
+            split_message = self._derive_split_message(message_chain, segment)
+            sent_result = await original_send(split_message, *args, **kwargs)
+            if index < len(segments) - 1:
+                delay = delays[index] if index < len(delays) else 0.0
+                await self._sleep_split_delay(event, delay)
+        return sent_result
+
+    def _install_event_split_sender(self, event, ctx: OutContext) -> None:
+        segments = ctx.split_segments
+        if not segments or getattr(event, "__outputpro_split_sender_installed", False):
+            return
+
+        original_send = getattr(event, "send", None)
+        if original_send is None:
+            logger.warning("[Splitter] event.send 不存在，无法安装分段发送包装器。")
+            return
+
+        delays = list(ctx.split_delays or [])
+
+        async def wrapped_send(_event_self, message_chain, *args, **kwargs):
+            if not self._matches_full_split_chain(message_chain, segments):
+                return await original_send(message_chain, *args, **kwargs)
+
+            setattr(_event_self, "send", original_send)
+            return await self._send_split_segments(
+                _event_self,
+                original_send,
+                message_chain,
+                segments,
+                delays,
+                *args,
+                **kwargs,
+            )
+
+        setattr(event, "__outputpro_split_sender_installed", True)
+        setattr(event, "send", MethodType(wrapped_send, event))
+
     async def _send_message_with_pipeline(
         self, unified_msg_origin, message_chain, *args, **kwargs
     ):
@@ -230,6 +355,18 @@ class OutputPlugin(Star):
             return None
 
         processed = MessageChain(ctx.chain)
+        if ctx.split_segments:
+            sent_result = None
+            delays = ctx.split_delays or []
+            for index, segment in enumerate(ctx.split_segments):
+                sent_result = await original(
+                    unified_msg_origin, MessageChain(segment), *args, **kwargs
+                )
+                if index < len(ctx.split_segments) - 1:
+                    delay = delays[index] if index < len(delays) else 0.0
+                    await self._sleep_split_delay(event, delay)
+            return sent_result
+
         return await original(unified_msg_origin, processed, *args, **kwargs)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
@@ -270,3 +407,4 @@ class OutputPlugin(Star):
         )
 
         await self.pipeline.run(ctx)
+        self._install_event_split_sender(event, ctx)
