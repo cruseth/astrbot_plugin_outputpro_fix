@@ -144,7 +144,13 @@ class TextTokenizer:
     def _get_split_priority(self, text: str) -> int:
         priority = 10**9
         for ch in text:
-            priority = min(priority, self.split_priority.get(ch, 10**9))
+            char_priority = self.split_priority.get(ch, 10**9)
+            if ch.isspace():
+                char_priority = min(
+                    char_priority,
+                    self.split_priority.get("__WHITESPACE__", 10**9),
+                )
+            priority = min(priority, char_priority)
         return priority
 
     # tokenize（核心）

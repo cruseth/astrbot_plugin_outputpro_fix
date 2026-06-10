@@ -240,6 +240,7 @@ class SplitConfig(ConfigNode):
             if ch == "\\n":
                 priority.setdefault("\n", idx)
             elif ch == "\\s":
+                priority.setdefault("__WHITESPACE__", idx)
                 priority.setdefault(" ", idx)
             else:
                 priority.setdefault(ch, idx)
