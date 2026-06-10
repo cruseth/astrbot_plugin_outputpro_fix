@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v2.2.3-fix.4
+
+错误修复：
+
+- 增强主动发送拦截兼容性：当平台或其他插件更新/替换 `context.send_message` 后，OutputPro 会重新安装包装器。
+- 新增对事件级 `event.send()` 主动发送的处理，修复部分插件消息绕过 OutputPro pipeline 的问题，同时避免重复处理 AstrBot 核心被动回复。
+- 智能引用改为按 `unified_msg_origin` 隔离消息队列，并兼容不同来源的消息组件类型，减少平台更新后引用失效或串会话的问题。
+
 ## v2.2.3-fix.3
 
 错误修复：

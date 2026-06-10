@@ -22,14 +22,20 @@ _ACTIVE_SEND_PROCESSING: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+def _is_plain_component(comp) -> bool:
+    return type(comp).__name__ == "Plain" and isinstance(getattr(comp, "text", None), str)
+
+
+def _plain_text_from_chain(chain: list[Any]) -> str:
+    return "".join(comp.text for comp in chain if _is_plain_component(comp))
+
+
 class _ActiveSendEvent:
     """Small event adapter for messages sent through context.send_message."""
 
     def __init__(self, unified_msg_origin: Any, chain: list[Any], context: Context):
         self.unified_msg_origin = str(unified_msg_origin or "")
-        self.message_str = "".join(
-            comp.text for comp in chain if isinstance(comp, Plain)
-        )
+        self.message_str = _plain_text_from_chain(chain)
         self._context = context
         self._stopped = False
         self._result = None
@@ -139,21 +145,27 @@ class OutputPlugin(Star):
 
     async def initialize(self):
         await self.pipeline.initialize()
-        self._install_send_message_wrapper()
+        self._ensure_send_message_wrapper()
 
     async def terminate(self):
         self._restore_send_message()
         await self.pipeline.terminate()
 
-    def _install_send_message_wrapper(self) -> None:
-        if self._original_send_message is not None:
-            return
-        original = getattr(self.context, "send_message", None)
-        if original is None:
+    def _ensure_send_message_wrapper(self) -> None:
+        current = getattr(self.context, "send_message", None)
+        if current is None:
             logger.warning("[OutputPro] context.send_message 不存在，主动发送拦截未启用。")
             return
 
-        self._original_send_message = original
+        if current is self._wrapped_send_message:
+            return
+
+        if self._wrapped_send_message is not None:
+            logger.warning(
+                "[OutputPro] context.send_message 已被替换，重新安装主动发送拦截。"
+            )
+
+        self._original_send_message = current
 
         async def wrapped_send_message(unified_msg_origin, message_chain, *args, **kwargs):
             return await self._send_message_with_pipeline(
@@ -179,7 +191,23 @@ class OutputPlugin(Star):
         self._wrapped_send_message = None
 
     def _plain_from_chain(self, chain: list[Any]) -> str:
-        return "".join(comp.text for comp in chain if isinstance(comp, Plain))
+        return _plain_text_from_chain(chain)
+
+    def _event_state_key(self, event: AstrMessageEvent) -> str:
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if umo:
+            return umo
+
+        for getter in ("get_group_id", "get_sender_id"):
+            fn = getattr(event, getter, None)
+            if callable(fn):
+                try:
+                    value = str(fn() or "").strip()
+                    if value:
+                        return value
+                except Exception:
+                    pass
+        return ""
 
     def _flatten_split_segments(self, segments: list[list[Any]]) -> list[Any]:
         return [comp for segment in segments for comp in segment]
@@ -280,7 +308,9 @@ class OutputPlugin(Star):
         if not segments or getattr(event, "__outputpro_split_sender_installed", False):
             return
 
-        original_send = getattr(event, "send", None)
+        original_send = getattr(event, "__outputpro_original_event_send", None)
+        if original_send is None:
+            original_send = getattr(event, "send", None)
         if original_send is None:
             logger.warning("[Splitter] event.send 不存在，无法安装分段发送包装器。")
             return
@@ -305,6 +335,91 @@ class OutputPlugin(Star):
         setattr(event, "__outputpro_split_sender_installed", True)
         setattr(event, "send", MethodType(wrapped_send, event))
 
+    def _is_core_result_send(self, event, message_chain) -> bool:
+        get_result = getattr(event, "get_result", None)
+        if not callable(get_result):
+            return False
+
+        try:
+            result = get_result()
+        except Exception:
+            return False
+
+        if result is None:
+            return False
+        if message_chain is result:
+            return True
+
+        result_chain = getattr(result, "chain", None)
+        chain = getattr(message_chain, "chain", None)
+        return result_chain is not None and chain is result_chain
+
+    def _install_event_send_wrapper(self, event: AstrMessageEvent) -> None:
+        if getattr(event, "__outputpro_active_send_installed", False):
+            return
+
+        original_send = getattr(event, "send", None)
+        if original_send is None:
+            return
+
+        setattr(event, "__outputpro_original_event_send", original_send)
+
+        async def wrapped_send(_event_self, message_chain, *args, **kwargs):
+            if (
+                _ACTIVE_SEND_PROCESSING.get()
+                or self._is_core_result_send(_event_self, message_chain)
+            ):
+                return await original_send(message_chain, *args, **kwargs)
+
+            chain = getattr(message_chain, "chain", None)
+            if chain is None:
+                return await original_send(message_chain, *args, **kwargs)
+
+            active_chain = list(chain)
+            state_key = self._event_state_key(_event_self)
+            ctx = OutContext(
+                event=_event_self,
+                chain=active_chain,
+                is_llm=False,
+                plain=self._plain_from_chain(active_chain),
+                gid=_event_self.get_group_id(),
+                uid=_event_self.get_sender_id(),
+                bid=_event_self.get_self_id(),
+                group=StateManager.get_group(state_key),
+                timestamp=getattr(_event_self.message_obj, "timestamp", int(time.time())),
+            )
+
+            token = _ACTIVE_SEND_PROCESSING.set(True)
+            try:
+                should_send = await self.pipeline.run(ctx)
+            except Exception as exc:
+                logger.warning(
+                    f"[OutputPro] event.send pipeline 处理失败，回退原始发送：{exc}"
+                )
+                return await original_send(message_chain, *args, **kwargs)
+            finally:
+                _ACTIVE_SEND_PROCESSING.reset(token)
+
+            if getattr(_event_self, "is_stopped", lambda: False)() or not should_send or not ctx.chain:
+                return None
+
+            processed = MessageChain(ctx.chain)
+            if ctx.split_segments:
+                return await self._send_split_segments(
+                    _event_self,
+                    original_send,
+                    processed,
+                    ctx.split_segments,
+                    ctx.split_delays,
+                    *args,
+                    **kwargs,
+                )
+
+            return await original_send(processed, *args, **kwargs)
+
+        setattr(event, "__outputpro_active_send_installed", True)
+        setattr(event, "send", MethodType(wrapped_send, event))
+
     async def _send_message_with_pipeline(
         self, unified_msg_origin, message_chain, *args, **kwargs
     ):
@@ -324,6 +439,7 @@ class OutputPlugin(Star):
         active_chain = list(chain)
         event = _ActiveSendEvent(unified_msg_origin, active_chain, self.context)
         group_id = event.get_group_id()
+        state_key = event.unified_msg_origin or group_id
         ctx = OutContext(
             event=event,  # type: ignore[arg-type]
             chain=active_chain,
@@ -332,7 +448,7 @@ class OutputPlugin(Star):
             gid=group_id,
             uid=event.get_sender_id(),
             bid=event.get_self_id(),
-            group=StateManager.get_group(group_id),
+            group=StateManager.get_group(state_key),
             timestamp=event.message_obj.timestamp,
         )
 
@@ -369,17 +485,22 @@ class OutputPlugin(Star):
 
         return await original(unified_msg_origin, processed, *args, **kwargs)
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=10000)
     async def on_message(self, event: AstrMessageEvent):
-        """收到群消息时"""
+        """收到消息时"""
+        self._ensure_send_message_wrapper()
+        self._install_event_send_wrapper(event)
+
         gid = event.get_group_id()
         sender_id = event.get_sender_id()
         self_id = event.get_self_id()
 
-        g = StateManager.get_group(gid)
+        g = StateManager.get_group(self._event_state_key(event))
 
         if self.cfg.reply.threshold > 0 and sender_id != self_id:
-            g.msg_queue.append(event.message_obj.message_id)
+            message_id = str(getattr(event.message_obj, "message_id", "") or "")
+            if message_id:
+                g.msg_queue.append(message_id)
 
         if self.cfg.pipeline.is_enabled_step(StepName.AT) and not self.cfg.at.at_str:
             name = event.get_sender_name()
@@ -402,7 +523,7 @@ class OutputPlugin(Star):
             gid=event.get_group_id(),
             uid=event.get_sender_id(),
             bid=event.get_self_id(),
-            group=StateManager.get_group(event.get_group_id()),
+            group=StateManager.get_group(self._event_state_key(event)),
             timestamp=event.message_obj.timestamp,
         )
 
