@@ -189,7 +189,7 @@ class ForwardStep(BaseStep):
         if ctx.chain and self._plain_text_len(ctx.chain) > self.cfg.threshold:
             platform_name = ctx.event.get_platform_name()
 
-            if platform_name == "aiocqhttp":
+            if self._is_onebot_platform(platform_name):
                 nodes = Nodes([])
                 name = await self._ensure_node_name(ctx.event)
                 uin = str(ctx.event.get_self_id() or ctx.bid)
@@ -208,3 +208,10 @@ class ForwardStep(BaseStep):
                     return StepResult(msg="已使用 Telegram 折叠引用发送")
 
         return StepResult()
+
+    def _is_onebot_platform(self, platform_name: str) -> bool:
+        normalized = str(platform_name or "").lower()
+        return any(
+            key in normalized
+            for key in ("aiocqhttp", "onebot", "cqhttp", "napcat", "lagrange")
+        )

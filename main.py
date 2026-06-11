@@ -65,6 +65,19 @@ class _ActiveSendEvent:
         return "", "", umo
 
     def get_platform_name(self) -> str:
+        platform = self._find_platform()
+        meta = self._platform_meta(platform)
+        name = str(getattr(meta, "name", "") or "").strip()
+        if name:
+            return name
+
+        for attr in ("platform_name", "name", "adapter_name"):
+            value = getattr(platform, attr, None)
+            if value:
+                return str(value)
+        return self.platform_id
+
+    def get_platform_id(self) -> str:
         return self.platform_id
 
     def get_group_id(self) -> str:
@@ -129,10 +142,21 @@ class _ActiveSendEvent:
         for platform in platform_insts:
             if str(getattr(platform, "id", "") or "") == self.platform_id:
                 return platform
-            meta = getattr(platform, "meta", None)
+            meta = self._platform_meta(platform)
             if str(getattr(meta, "id", "") or "") == self.platform_id:
                 return platform
         return None
+
+    def _platform_meta(self, platform):
+        if platform is None:
+            return None
+        meta = getattr(platform, "meta", None)
+        if callable(meta):
+            try:
+                return meta()
+            except Exception:
+                return None
+        return meta
 
 
 class OutputPlugin(Star):

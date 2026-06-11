@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## v2.2.3-fix.6
+
+错误修复：
+
+- 修复主动发送时将 UMO 的平台实例 ID 误当作平台类型，导致 `forward(合并转发)` 无法识别 aiocqhttp 并跳过长文本转聊天记录的问题。
+- 合并转发增加 OneBot/CQHTTP 兼容识别，支持 `aiocqhttp`、`onebot`、`cqhttp`、`napcat`、`lagrange` 等平台名变体。
+
 ## v2.2.3-fix.5
 
 错误修复：
