@@ -186,7 +186,12 @@ class TextTokenizer:
             if ch == " ":
                 prev = text[i - 1] if i > 0 else ""
                 next_ = text[i + 1] if i + 1 < len(text) else ""
-                if prev.isalnum() and next_.isalnum():
+                if (
+                    prev.isascii()
+                    and prev.isalnum()
+                    and next_.isascii()
+                    and next_.isalnum()
+                ):
                     buf += ch
                     i += 1
                     continue
@@ -223,7 +228,7 @@ class TextTokenizer:
             m = self.pattern.match(text, i)
             if m:
                 seg = m.group()
-                if seg.strip() == "" and (seg.splitlines() == [seg] or not buf.strip()):
+                if seg.strip() == "" and not buf.strip():
                     buf += seg
                     i += len(seg)
                     continue

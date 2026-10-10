@@ -12,19 +12,24 @@
 
 ## 字体
 
-字体优先使用 `fonts/MapleMono-NF-CN-Regular.ttf` 和 `fonts/MapleMono-NF-CN-SemiBold.ttf`，中文、英文、数字和代码都走同一套清晰字体。
+当前目录实际提供两个字体文件：
 
-备用字体包括 `Symbola_hint.ttf`、`DroidSansFallbackFull.ttf`、`DejaVuSansMono.ttf`。其中 `Symbola_hint.ttf` 用来覆盖常见 emoji，避免显示成方框。不要改成 `.ttc` 字体集合，当前 pillowmd/fontTools 加载 `.ttc` 时可能需要字体编号，容易失败。
+- `fonts/OPPOSans-Regular.ttf`：`setting.yml` 默认使用的中文、英文、数字和代码字体。
+- `fonts/DejaVuSansMono.ttf`：默认备用等宽字体。
+
+不要在配置中填写未随本插件交付的字体文件；如自行替换字体，请同步修改 `setting.yml` 的字体字段。
 
 ## 使用方式
 
-在 AstrBot WebUI 的本插件配置里，把 `style_path` 填成：
+在 AstrBot WebUI 的本插件配置里，把 `t2i.pillowmd_style_dir` 填成：
 
 ```text
-/AstrBot/data/plugins/astrbot_plugin_nobrowser_markdown_to_pic/styles/modern-clear
+data/plugins/astrbot_plugin_outputpro_fix/t2i_style
 ```
 
 注意填目录，不要填 `setting.yml` 文件本身。
+
+当前 `elements.yml` 的背景功能为关闭状态；如需启用背景图片，请自行准备配置中引用的资源。
 
 ## 预览
 
