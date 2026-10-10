@@ -40,36 +40,39 @@ class Segment:
 
     @property
     def is_empty(self) -> bool:
-        return not self.text.strip() and not self.has_media
+        if self.text.strip():
+            return False
+        if not self.has_media:
+            return True
+        return all(isinstance(c, (At, Reply)) for c in self.components)
 
     _LEADING_STRIP_RE = re.compile(r"^(?:\\n|[\r\n\s])+")
     _TRAILING_STRIP_RE = re.compile(r"(?:\\n|[\r\n\s])+$")
 
-    def lstrip_plain(self):
-        """去除 Plain 头部空白与多余换行（含字面量\\n），但保留 At 后的一个空格"""
+    def _strip_edges(self, text: str) -> str:
+        text = self._LEADING_STRIP_RE.sub("", text)
+        return self._TRAILING_STRIP_RE.sub("", text)
+
+    def strip_plain(self):
+        """删除空 Plain，裁剪首尾空白与字面量\\n，并保留 At 后一个空格。"""
         prev_is_at = False
+        new_components = []
         for c in self.components:
             if isinstance(c, At):
                 prev_is_at = True
+                new_components.append(c)
                 continue
             if isinstance(c, Plain):
-                original = c.text
-                stripped = self._LEADING_STRIP_RE.sub("", original)
-                # At 后保留一个空格
-                if prev_is_at and original[:1].isspace() and stripped:
-                    c.text = " " + stripped
-                else:
-                    c.text = stripped
-                break
-            # 遇到别的组件就停止
-            break
-
-    def rstrip_plain(self):
-        """去除 Plain 末尾空白与多余换行（含字面量\\n）"""
-        for c in reversed(self.components):
-            if isinstance(c, Plain):
-                c.text = self._TRAILING_STRIP_RE.sub("", c.text)
-                break
+                stripped = self._strip_edges(c.text)
+                if not stripped.replace("\u200b", "").strip():
+                    continue
+                c.text = " " + stripped if prev_is_at else stripped
+                new_components.append(c)
+                prev_is_at = False
+                continue
+            new_components.append(c)
+            prev_is_at = False
+        self.components[:] = new_components
 
     def strip_tail_punc(self, pattern):
         """去掉尾部标点（仅最后一个 Plain 生效）"""
@@ -220,6 +223,10 @@ class TextTokenizer:
             m = self.pattern.match(text, i)
             if m:
                 seg = m.group()
+                if seg.strip() == "" and (seg.splitlines() == [seg] or not buf.strip()):
+                    buf += seg
+                    i += len(seg)
+                    continue
                 buf += seg
                 yield Token(
                     self._restore_kaomoji(buf, mapping),
@@ -325,7 +332,13 @@ class TypingController:
 # =========================
 class SplitStep(BaseStep):
     name = StepName.SPLIT
-    support_platforms = {"aiocqhttp", "telegram", "lark"}
+    support_platforms = {
+        "aiocqhttp",
+        "telegram",
+        "lark",
+        "qq_official",
+        "qq_official_webhook",
+    }
 
     def __init__(self, config: PluginConfig):
         super().__init__(config)
@@ -350,23 +363,24 @@ class SplitStep(BaseStep):
                 return StepResult()
 
         # 分段
-        segments = self._split_chain(ctx.chain, self.cfg.max_count)
+        segments = self._split_chain(ctx.chain)
 
         # 后处理
         for seg in segments:
-            seg.lstrip_plain()
-            seg.rstrip_plain()
+            seg.strip_plain()
             if self.cfg.tail_punc_re:
                 seg.strip_tail_punc(self.cfg.tail_punc_re)
 
-        if len(segments) <= 1:
-            return StepResult()
-
-        logger.debug(f"[Splitter] 消息被分为 {len(segments)} 段")
-
         non_empty_segments = [seg for seg in segments if not seg.is_empty]
         if len(non_empty_segments) <= 1:
+            ctx.chain.clear()
+            if non_empty_segments:
+                ctx.chain.extend(non_empty_segments[0].components)
+            ctx.split_segments = None
+            ctx.split_delays = None
             return StepResult()
+
+        logger.debug(f"[Splitter] 消息被分为 {len(non_empty_segments)} 段")
 
         ctx.split_segments = [list(seg.components) for seg in non_empty_segments]
         ctx.split_delays = [
@@ -407,14 +421,14 @@ class SplitStep(BaseStep):
     # =========================
     # 核心 split
     # =========================
-    def _select_split_points(self, tokens: list[Token], max_count: int) -> set[int]:
+    def _select_split_points(self, tokens: list[Token], max_count: int | None = None) -> set[int]:
         """
         选切点（最多 max_count 段 → k = max_count-1 个切点）
         规则：
         1. 优先使用语义切点（is_split）
         2. 按累计长度均分选择切点
         """
-
+        max_count = self.cfg.max_count if max_count is None else max_count
         split_idx = [i for i, t in enumerate(tokens) if t.is_split and t.text.strip()]
         if not split_idx:
             return set()
@@ -460,7 +474,7 @@ class SplitStep(BaseStep):
         return selected
 
     def _split_chain(
-        self, chain: list[BaseMessageComponent], max_count: int
+        self, chain: list[BaseMessageComponent]
     ) -> list[Segment]:
         builder = SegmentBuilder()
 
@@ -477,7 +491,7 @@ class SplitStep(BaseStep):
                     continue
 
                 tokens = list(self.tokenizer.tokenize(text))
-                selected = self._select_split_points(tokens, max_count)
+                selected = self._select_split_points(tokens)
 
                 for i, token in enumerate(tokens):
                     builder.append([Plain(token.text)])
