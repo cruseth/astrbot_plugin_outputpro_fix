@@ -241,10 +241,15 @@ class OutputPlugin(Star):
         if chain is None:
             return False
         expected = self._flatten_split_segments(segments)
-        return len(chain) == len(expected) and all(
+        if len(chain) == len(expected) and all(
             actual is expect or actual == expect
             for actual, expect in zip(chain, expected)
-        )
+        ):
+            return True
+        # 兼容 AstrBot core 在发送前过滤空 Plain 或使用 derive() 产生的新对象
+        actual_text = _plain_text_from_chain(chain).strip()
+        expected_text = _plain_text_from_chain(expected).strip()
+        return bool(actual_text and actual_text == expected_text)
 
     def _derive_split_message(self, message_chain, segment: list[Any]):
         derive = getattr(message_chain, "derive", None)

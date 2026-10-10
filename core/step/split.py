@@ -42,8 +42,11 @@ class Segment:
     def is_empty(self) -> bool:
         return not self.text.strip() and not self.has_media
 
+    _LEADING_STRIP_RE = re.compile(r"^(?:\\n|[\r\n\s])+")
+    _TRAILING_STRIP_RE = re.compile(r"(?:\\n|[\r\n\s])+$")
+
     def lstrip_plain(self):
-        """去除 Plain 头部空白，但保留 At 后的一个空格"""
+        """去除 Plain 头部空白与多余换行（含字面量\\n），但保留 At 后的一个空格"""
         prev_is_at = False
         for c in self.components:
             if isinstance(c, At):
@@ -51,7 +54,7 @@ class Segment:
                 continue
             if isinstance(c, Plain):
                 original = c.text
-                stripped = original.lstrip()
+                stripped = self._LEADING_STRIP_RE.sub("", original)
                 # At 后保留一个空格
                 if prev_is_at and original[:1].isspace() and stripped:
                     c.text = " " + stripped
@@ -62,10 +65,11 @@ class Segment:
             break
 
     def rstrip_plain(self):
-        """去除 Plain 末尾空白"""
-        for c in self.components:
+        """去除 Plain 末尾空白与多余换行（含字面量\\n）"""
+        for c in reversed(self.components):
             if isinstance(c, Plain):
-                c.text = c.text.rstrip()
+                c.text = self._TRAILING_STRIP_RE.sub("", c.text)
+                break
 
     def strip_tail_punc(self, pattern):
         """去掉尾部标点（仅最后一个 Plain 生效）"""
@@ -142,7 +146,15 @@ class TextTokenizer:
         return text
 
     def _get_split_priority(self, text: str) -> int:
-        priority = 10**9
+        priority = self.split_priority.get(text, 10**9)
+
+        for token in ("\\n", "\r\n", "\n", "\r"):
+            if token in text:
+                priority = min(
+                    priority,
+                    self.split_priority.get(token, 10**9),
+                )
+
         for ch in text:
             char_priority = self.split_priority.get(ch, 10**9)
             if ch.isspace():
@@ -151,6 +163,7 @@ class TextTokenizer:
                     self.split_priority.get("__WHITESPACE__", 10**9),
                 )
             priority = min(priority, char_priority)
+
         return priority
 
     # tokenize（核心）

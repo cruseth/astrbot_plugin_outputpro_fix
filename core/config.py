@@ -224,21 +224,38 @@ class SplitConfig(ConfigNode):
     def _build_split_pattern(self) -> str:
         if not self.char_list:
             return r"(?!x)x"
-        tokens: list[str] = []
+        single_chars: list[str] = []
+        multi_tokens: list[str] = []
         for ch in self.char_list:
             if ch in ("\\n", "\n"):
-                tokens.append("\n")
+                multi_tokens.append(r"\\n")
+                single_chars.extend((r"\r", r"\n"))
             elif ch == "\\s":
-                tokens.append(r"\s")
+                single_chars.append(r"\s")
             else:
-                tokens.append(re.escape(ch))
-        return f"[{''.join(tokens)}]+"
+                escaped = re.escape(ch)
+                if len(ch) > 1:
+                    multi_tokens.append(escaped)
+                else:
+                    single_chars.append(escaped)
+
+        parts: list[str] = []
+        if multi_tokens:
+            parts.extend(multi_tokens)
+        if single_chars:
+            parts.append(f"[{''.join(single_chars)}]")
+
+        inner = "|".join(parts)
+        return f"(?:{inner})+"
 
     def _build_split_priority(self) -> dict[str, int]:
         priority: dict[str, int] = {}
         for idx, ch in enumerate(self.char_list):
-            if ch == "\\n":
+            if ch in ("\\n", "\n"):
                 priority.setdefault("\n", idx)
+                priority.setdefault("\r\n", idx)
+                priority.setdefault("\r", idx)
+                priority.setdefault("\\n", idx)
             elif ch == "\\s":
                 priority.setdefault("__WHITESPACE__", idx)
                 priority.setdefault(" ", idx)
