@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v2.2.8-fix.2
+
+错误修复：
+
+- 修复主动消息（`context.send_message` / `event.send`）超过合并转发阈值时，转发节点归属显示成用户本人的问题。
+- 主动发送路径改为通过 `get_login_info()` 解析机器人自身 QQ，不再依赖平台对象上并不存在的 `self_id` 属性。
+- 为 aiocqhttp 的 `__getattr__` 伪造属性增加类型白名单，避免 `get_self_id()` 把 `functools.partial` 当成机器人 QQ。
+- 无法解析机器人 QQ 时跳过合并转发并退化为普通发送，不再发送非法 uin；节点昵称改为优先使用机器人当前昵称。
+- 为 `get_login_info()` 增加 5 秒上限超时，避免协议端无响应时阻塞主动发送。
+- 新增合并转发 uin 归属回归测试。
+
 ## v2.2.8-fix.1
 
 同步与融合：

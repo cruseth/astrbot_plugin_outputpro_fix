@@ -1,3 +1,9 @@
+import asyncio
+import inspect
+from collections.abc import Mapping
+from typing import Any
+
+from astrbot.api import logger
 from astrbot.core.message.components import (
     BaseMessageComponent,
     Node,
@@ -6,13 +12,16 @@ from astrbot.core.message.components import (
     Reply,
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
-    AiocqhttpMessageEvent,
-)
 
 from ..config import PluginConfig
 from ..model import OutContext, StepName, StepResult
 from .base import BaseStep
+
+
+#: 获取机器人登录信息的上限超时（秒）。
+#: aiocqhttp 的 CQHttp 以 api_timeout_sec=180 创建，协议端「已连接但无响应」时
+#: get_login_info 可能长时间阻塞，这里给主动发送路径一个可接受的等待上限。
+_LOGIN_INFO_TIMEOUT_SEC = 5.0
 
 
 class ForwardStep(BaseStep):
@@ -25,29 +34,116 @@ class ForwardStep(BaseStep):
         self._bot_name_cache: dict[str, str] = {}
         self._tg_single_message_limit = 3500
 
-    async def _ensure_node_name(self, event: AstrMessageEvent) -> str:
+    @staticmethod
+    def _normalize_uin(value: Any) -> str:
+        """把候选账号值规整成合法的 OneBot QQ 号，不合法时返回空串。"""
+        if isinstance(value, bool):
+            return ""
+        if isinstance(value, int):
+            text = str(value)
+        elif isinstance(value, str):
+            text = value.strip()
+        else:
+            return ""
+        if not text or text == "0":
+            return ""
+        if not (text.isascii() and text.isdigit()):
+            return ""
+        return text
+
+    @staticmethod
+    async def _call_login_info(bot: Any) -> dict[str, Any]:
+        """尽力获取机器人登录信息，任何失败都只返回空 dict。
+
+        ``await`` 分支带 ``_LOGIN_INFO_TIMEOUT_SEC`` 上限超时；超时与异常一律
+        按失败降级，交由调用方走「跳过合并转发」路径。``asyncio.CancelledError``
+        不属于 ``Exception``，不会被下面的分支吞掉，任务取消语义保持有效。
+        """
+        if bot is None:
+            return {}
+
+        try:
+            info = bot.get_login_info()
+            if inspect.isawaitable(info):
+                info = await asyncio.wait_for(
+                    info, timeout=_LOGIN_INFO_TIMEOUT_SEC
+                )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "[OutputPro] 获取机器人登录信息超时（上限 "
+                f"{_LOGIN_INFO_TIMEOUT_SEC}s），已跳过合并转发"
+            )
+            return {}
+        except Exception:
+            logger.debug("[OutputPro] 获取机器人登录信息失败", exc_info=True)
+            return {}
+
+        if isinstance(info, Mapping):
+            return dict(info)
+        return {}
+
+    async def _ensure_node_name(
+        self,
+        event: AstrMessageEvent,
+        uin: str = "",
+        info: dict[str, Any] | None = None,
+    ) -> str:
+        """解析合并转发节点昵称：配置 > 登录昵称 > "AstrBot"，失败只降级。"""
         if self._configured_node_name:
             return self._configured_node_name
 
-        bot_id = str(event.get_self_id() or "").strip()
-        if bot_id and bot_id in self._bot_name_cache:
-            return self._bot_name_cache[bot_id]
+        if uin and (cached := self._bot_name_cache.get(uin)):
+            return cached
+
+        if info is None:
+            info = await self._call_login_info(getattr(event, "bot", None))
 
         node_name = ""
-        if isinstance(event, AiocqhttpMessageEvent):
-            try:
-                info = await event.bot.get_login_info()
-                if nickname := info.get("nickname"):
-                    node_name = str(nickname).strip()
-            except Exception:
-                pass
+        if info:
+            node_name = str(info.get("nickname") or "").strip()
 
         if not node_name:
             node_name = "AstrBot"
 
-        if bot_id:
-            self._bot_name_cache[bot_id] = node_name
+        if uin:
+            self._bot_name_cache[uin] = node_name
         return node_name
+
+    async def _resolve_node_identity(
+        self, event: AstrMessageEvent
+    ) -> tuple[str, str]:
+        """解析合并转发节点的 (uin, name)。
+
+        uin 必须是机器人自身 QQ：先采信事件自带的 self_id（被动回复路径），
+        拿不到合法值时退回 ``bot.get_login_info()``（主动发送路径）。
+        两者都不可用时返回 ``("", "")``，由调用方放弃合并转发。
+        """
+        raw_self_id = str(event.get_self_id() or "").strip()
+
+        uin = self._normalize_uin(raw_self_id)
+        if uin:
+            return uin, await self._ensure_node_name(event, uin)
+
+        info = await self._call_login_info(getattr(event, "bot", None))
+        uin = self._normalize_uin(info.get("user_id"))
+        if not uin:
+            logger.warning(
+                "[OutputPro] 无法解析合并转发节点的机器人 QQ，已跳过合并转发："
+                f"platform={self._platform_name(event)} self_id={raw_self_id!r}"
+            )
+            return "", ""
+
+        return uin, await self._ensure_node_name(event, uin, info)
+
+    @staticmethod
+    def _platform_name(event: AstrMessageEvent) -> str:
+        getter = getattr(event, "get_platform_name", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "")
+        except Exception:
+            return ""
 
     def _tg_utf16_len(self, text: str) -> int:
         if not text:
@@ -196,14 +292,17 @@ class ForwardStep(BaseStep):
             platform_name = ctx.event.get_platform_name()
 
             if self._is_onebot_platform(platform_name):
+                uin, name = await self._resolve_node_identity(ctx.event)
+                if not uin:
+                    # 拿不到机器人自身 QQ 时不转发，避免节点归属错乱
+                    return StepResult()
+
                 content = [
                     component
                     for component in ctx.chain
                     if not isinstance(component, Reply)
                 ]
                 nodes = Nodes([])
-                name = await self._ensure_node_name(ctx.event)
-                uin = str(ctx.event.get_self_id() or ctx.bid)
                 nodes.nodes.append(Node(uin=uin, name=name, content=content))
                 ctx.chain[:] = [nodes]
                 return StepResult(msg="已将消息转换为转发节点")

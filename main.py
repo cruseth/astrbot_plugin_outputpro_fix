@@ -97,14 +97,36 @@ class _ActiveSendEvent:
         if platform is None:
             return ""
         for attr in ("self_id", "bot_id", "account_id", "id"):
-            value = getattr(platform, attr, None)
+            value = self._coerce_account_id(getattr(platform, attr, None))
             if value:
-                return str(value)
+                return value
         bot = getattr(platform, "bot", None)
         for attr in ("self_id", "bot_id", "account_id", "qq"):
-            value = getattr(bot, attr, None)
+            value = self._coerce_account_id(getattr(bot, attr, None))
             if value:
-                return str(value)
+                return value
+        return ""
+
+    @property
+    def bot(self):
+        """底层平台机器人对象（aiocqhttp 为 CQHttp 实例），拿不到时为 None。"""
+        platform = self._find_platform()
+        return getattr(platform, "bot", None)
+
+    @staticmethod
+    def _coerce_account_id(value: Any) -> str:
+        """只接受 str / int 形式的账号 ID。
+
+        aiocqhttp 的 ``CQHttp`` 继承 ``AsyncApi``，其 ``__getattr__`` 会对任何
+        不存在的属性返回 ``functools.partial(call_action, 名称)``；这里做类型
+        白名单，避免把这类伪造属性当成机器人 QQ。
+        """
+        if isinstance(value, bool):
+            return ""
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str):
+            return value.strip()
         return ""
 
     def get_sender_name(self) -> str:
